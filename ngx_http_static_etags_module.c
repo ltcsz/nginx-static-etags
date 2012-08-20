@@ -138,8 +138,11 @@ static ngx_int_t ngx_http_static_etags_header_filter(ngx_http_request_t *r) {
     
         // Did the `stat` succeed?
         if ( 0 == status) {
-            str_len    = 1000;
-            str_buffer = malloc( str_len + sizeof(char) );
+            // str_len    = 1000;
+            // str_buffer = malloc( str_len + sizeof(char) ); // memory leak
+            str_len    = 512;
+            str_buffer = ngx_palloc(r->pool, str_len + sizeof(char) );
+
             sprintf( str_buffer, (char *) loc_conf->etag_format.data, r->uri.data, (unsigned int) stat_result.st_size, (unsigned int) stat_result.st_mtime );
             
             ngx_log_debug1(NGX_LOG_DEBUG_HTTP, log, 0,
