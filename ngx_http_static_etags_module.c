@@ -111,7 +111,7 @@ static ngx_int_t ngx_http_static_etags_header_filter(ngx_http_request_t *r) {
     ngx_str_t                           path;
     ngx_http_static_etags_loc_conf_t   *loc_conf;
     struct stat                         stat_result;
-    char                               *data;
+    char                               *etag;
 
     log = r->connection->log;
     
@@ -131,13 +131,13 @@ static ngx_int_t ngx_http_static_etags_header_filter(ngx_http_request_t *r) {
         // Did the `stat` succeed?
         if ( 0 == status) {
 
-            data = (char *)ngx_palloc(r->pool, (ETAG_MAX_SIZE + 2) * sizeof(char));
-            sprintf( data, "%lX_%lX", ETAG_ELE_TYPE stat_result.st_size, ETAG_ELE_TYPE stat_result.st_mtime );
+            etag = (char *)ngx_palloc(r->pool, (ETAG_MAX_SIZE + 2) * sizeof(char));
+            sprintf( etag, "%lX_%lX", ETAG_ELE_TYPE stat_result.st_size, ETAG_ELE_TYPE stat_result.st_mtime );
  
             ngx_log_debug1(NGX_LOG_DEBUG_HTTP, log, 0, "stat returned: \"%d\"", status);
             ngx_log_debug2(NGX_LOG_DEBUG_HTTP, log, 0, "st_size: '%d'\tsize: %d", stat_result.st_size, sizeof(stat_result.st_size));
             ngx_log_debug2(NGX_LOG_DEBUG_HTTP, log, 0, "st_mtime: '%d'\tsize: %d", stat_result.st_mtime, sizeof(stat_result.st_mtime));
-            ngx_log_debug2(NGX_LOG_DEBUG_HTTP, log, 0, "data: \"%s\"\tsize: %d", data, strlen(data));
+            ngx_log_debug2(NGX_LOG_DEBUG_HTTP, log, 0, "etag: \"%s\"\tsize: %d", etag, strlen(etag));
                     
             r->headers_out.etag = ngx_list_push(&r->headers_out.headers);
             if (r->headers_out.etag == NULL) {
@@ -146,8 +146,8 @@ static ngx_int_t ngx_http_static_etags_header_filter(ngx_http_request_t *r) {
             r->headers_out.etag->hash = 1;
             r->headers_out.etag->key.len = sizeof("Etag") - 1;
             r->headers_out.etag->key.data = (u_char *) "Etag";
-            r->headers_out.etag->value.len = strlen(data);
-            r->headers_out.etag->value.data = (u_char *) data;
+            r->headers_out.etag->value.len = strlen(etag);
+            r->headers_out.etag->value.data = (u_char *) etag;
         }
     }
 
