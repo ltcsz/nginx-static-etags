@@ -7,16 +7,22 @@
 #include <ngx_config.h>
 #include <ngx_core.h>
 #include <ngx_http.h>
+#include <ngx_md5.h>
 #include <sys/stat.h>
 
+#define TOHEX(d) *(hexEle + (d))
+#define MD5SIZE 32
+#define DATA_SIZE 32
+
 /*
- *  Two configuration elements: `enable_etags` and `etag_format`, specified in
+ *  One configuration element: `FileETag`, specified in
  *  the `Location` block.
  */
 typedef struct {
     ngx_uint_t  FileETag;
-    ngx_str_t   etag_format;
 } ngx_http_static_etags_loc_conf_t;
+
+static const char hexEle[] = "0123456789abcdef";
 
 static ngx_http_output_header_filter_pt  ngx_http_next_header_filter;
 /*static ngx_http_output_body_filter_pt    ngx_http_next_body_filter;*/
@@ -26,19 +32,14 @@ static char * ngx_http_static_etags_merge_loc_conf(ngx_conf_t *cf, void *parent,
 static ngx_int_t ngx_http_static_etags_init(ngx_conf_t *cf);
 static ngx_int_t ngx_http_static_etags_header_filter(ngx_http_request_t *r);
 
+static void md5(const unsigned char *d, size_t n, char *md5, ngx_log_t *log);
+
 static ngx_command_t  ngx_http_static_etags_commands[] = {
     { ngx_string( "FileETag" ),
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_FLAG,
       ngx_conf_set_flag_slot,
       NGX_HTTP_LOC_CONF_OFFSET,
       offsetof( ngx_http_static_etags_loc_conf_t, FileETag ),
-      NULL },
-
-    { ngx_string( "etag_format" ),
-      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
-      ngx_conf_set_str_slot,
-      NGX_HTTP_LOC_CONF_OFFSET,
-      offsetof( ngx_http_static_etags_loc_conf_t, etag_format ),
       NULL },
 
       ngx_null_command
@@ -90,7 +91,6 @@ static char * ngx_http_static_etags_merge_loc_conf(ngx_conf_t *cf, void *parent,
     ngx_http_static_etags_loc_conf_t *conf = child;
 
     ngx_conf_merge_uint_value( conf->FileETag, prev->FileETag, 0 );
-    ngx_conf_merge_str_value(  conf->etag_format, prev->etag_format, "%s_%X_%X" );
 
     if ( conf->FileETag != 0 && conf->FileETag != 1 ) {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, 
@@ -116,8 +116,8 @@ static ngx_int_t ngx_http_static_etags_header_filter(ngx_http_request_t *r) {
     ngx_str_t                           path;
     ngx_http_static_etags_loc_conf_t   *loc_conf;
     struct stat                         stat_result;
-    char                               *str_buffer;
-    int                                 str_len;
+    char                               *md5_result;
+    char                               *data;
 
     log = r->connection->log;
     
@@ -138,22 +138,20 @@ static ngx_int_t ngx_http_static_etags_header_filter(ngx_http_request_t *r) {
     
         // Did the `stat` succeed?
         if ( 0 == status) {
-            // str_len    = 1000;
-            // str_buffer = malloc( str_len + sizeof(char) ); // memory leak
-            str_len    = 512;
-            str_buffer = ngx_palloc(r->pool, str_len + sizeof(char) );
 
-            sprintf( str_buffer, (char *) loc_conf->etag_format.data, r->uri.data, (unsigned int) stat_result.st_size, (unsigned int) stat_result.st_mtime );
-            
-            ngx_log_debug1(NGX_LOG_DEBUG_HTTP, log, 0,
-                            "stat returned: \"%d\"", status);
-    
-            ngx_log_debug1(NGX_LOG_DEBUG_HTTP, log, 0,
-                         "st_size: '%d'", stat_result.st_size);
-            ngx_log_debug1(NGX_LOG_DEBUG_HTTP, log, 0,
-                         "st_mtime: '%d'", stat_result.st_mtime);
-            ngx_log_debug1(NGX_LOG_DEBUG_HTTP, log, 0,
-                         "Concatted: '%s'", str_buffer );
+            data = (char *)ngx_palloc(r->pool, (DATA_SIZE + 2) * sizeof(char));
+            sprintf( data, "%X_%X", (unsigned int)stat_result.st_size, (unsigned int)stat_result.st_mtime );
+ 
+
+            md5_result = (char *)ngx_palloc(r->pool, (MD5SIZE + 1) * sizeof(char));
+            md5((u_char *)data, strlen(data), md5_result, log);
+ 
+            ngx_log_debug1(NGX_LOG_DEBUG_HTTP, log, 0, "stat returned: \"%d\"", status);
+            ngx_log_debug2(NGX_LOG_DEBUG_HTTP, log, 0, "st_size: '%d'\tsize: %d", stat_result.st_size, sizeof(stat_result.st_size));
+            ngx_log_debug2(NGX_LOG_DEBUG_HTTP, log, 0, "st_mtime: '%d'\tsize: %d", stat_result.st_mtime, sizeof(stat_result.st_mtime));
+
+            ngx_log_debug2(NGX_LOG_DEBUG_HTTP, log, 0, "data: \"%s\"\tsize: %d", data, strlen(data));
+            ngx_log_debug2(NGX_LOG_DEBUG_HTTP, log, 0, "md5: '%s'\tsize: %d", md5_result, strlen(md5_result));
                     
             r->headers_out.etag = ngx_list_push(&r->headers_out.headers);
             if (r->headers_out.etag == NULL) {
@@ -162,10 +160,31 @@ static ngx_int_t ngx_http_static_etags_header_filter(ngx_http_request_t *r) {
             r->headers_out.etag->hash = 1;
             r->headers_out.etag->key.len = sizeof("Etag") - 1;
             r->headers_out.etag->key.data = (u_char *) "Etag";
-            r->headers_out.etag->value.len = strlen( str_buffer );
-            r->headers_out.etag->value.data = (u_char *) str_buffer;
+            r->headers_out.etag->value.len = strlen(md5_result);
+            r->headers_out.etag->value.data = (u_char *) md5_result;
         }
     }
 
     return ngx_http_next_header_filter(r);
+}
+
+void md5(const unsigned char *d, size_t n, char *md5, ngx_log_t *log){
+
+            u_char result[16];
+            u_char *tmp_result = result;
+            char *tmp = md5;
+
+            ngx_md5_t md5_ctx;
+            ngx_md5_init(&md5_ctx);
+            ngx_md5_update(&md5_ctx, d, n);
+            ngx_md5_final(result, &md5_ctx);
+
+            ngx_log_debug1(NGX_LOG_DEBUG_HTTP, log, 0, "result: \"%s\"", result);
+
+            while(*tmp_result != '\0'){
+              *tmp++ = TOHEX( (*tmp_result) >> 4 );
+              *tmp++ = TOHEX( (*tmp_result) & 0xf );
+              tmp_result++;
+            }
+            *tmp = '\0';
 }
