@@ -10,9 +10,8 @@
 #include <ngx_md5.h>
 #include <sys/stat.h>
 
-#define TOHEX(d) *(hexEle + (d))
-#define MD5SIZE 32
-#define DATA_SIZE 32
+#define ETAG_ELE_TYPE (unsigned long int)
+#define ETAG_MAX_SIZE (sizeof ETAG_ELE_TYPE << 2)
 
 /*
  *  One configuration element: `FileETag`, specified in
@@ -22,7 +21,6 @@ typedef struct {
     ngx_uint_t  FileETag;
 } ngx_http_static_etags_loc_conf_t;
 
-static const char hexEle[] = "0123456789abcdef";
 
 static ngx_http_output_header_filter_pt  ngx_http_next_header_filter;
 /*static ngx_http_output_body_filter_pt    ngx_http_next_body_filter;*/
@@ -31,8 +29,6 @@ static void * ngx_http_static_etags_create_loc_conf(ngx_conf_t *cf);
 static char * ngx_http_static_etags_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child);
 static ngx_int_t ngx_http_static_etags_init(ngx_conf_t *cf);
 static ngx_int_t ngx_http_static_etags_header_filter(ngx_http_request_t *r);
-
-static void md5(const unsigned char *d, size_t n, char *md5, ngx_log_t *log);
 
 static ngx_command_t  ngx_http_static_etags_commands[] = {
     { ngx_string( "FileETag" ),
@@ -93,8 +89,7 @@ static char * ngx_http_static_etags_merge_loc_conf(ngx_conf_t *cf, void *parent,
     ngx_conf_merge_uint_value( conf->FileETag, prev->FileETag, 0 );
 
     if ( conf->FileETag != 0 && conf->FileETag != 1 ) {
-        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, 
-            "FileETag must be 'on' or 'off'");
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "FileETag must be 'on' or 'off'");
         return NGX_CONF_ERROR;
     }
 
@@ -116,7 +111,6 @@ static ngx_int_t ngx_http_static_etags_header_filter(ngx_http_request_t *r) {
     ngx_str_t                           path;
     ngx_http_static_etags_loc_conf_t   *loc_conf;
     struct stat                         stat_result;
-    char                               *md5_result;
     char                               *data;
 
     log = r->connection->log;
@@ -130,28 +124,20 @@ static ngx_int_t ngx_http_static_etags_header_filter(ngx_http_request_t *r) {
             return NGX_HTTP_INTERNAL_SERVER_ERROR;
         }
 
-
-        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, log, 0,
-                        "http filename: \"%s\"", path.data);
+        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, log, 0, "http filename: \"%s\"", path.data);
     
         status = stat( (char *) path.data, &stat_result );
     
         // Did the `stat` succeed?
         if ( 0 == status) {
 
-            data = (char *)ngx_palloc(r->pool, (DATA_SIZE + 2) * sizeof(char));
-            sprintf( data, "%X_%X", (unsigned int)stat_result.st_size, (unsigned int)stat_result.st_mtime );
- 
-
-            md5_result = (char *)ngx_palloc(r->pool, (MD5SIZE + 1) * sizeof(char));
-            md5((u_char *)data, strlen(data), md5_result, log);
+            data = (char *)ngx_palloc(r->pool, (ETAG_MAX_SIZE + 2) * sizeof(char));
+            sprintf( data, "%lX_%lX", ETAG_ELE_TYPE stat_result.st_size, ETAG_ELE_TYPE stat_result.st_mtime );
  
             ngx_log_debug1(NGX_LOG_DEBUG_HTTP, log, 0, "stat returned: \"%d\"", status);
             ngx_log_debug2(NGX_LOG_DEBUG_HTTP, log, 0, "st_size: '%d'\tsize: %d", stat_result.st_size, sizeof(stat_result.st_size));
             ngx_log_debug2(NGX_LOG_DEBUG_HTTP, log, 0, "st_mtime: '%d'\tsize: %d", stat_result.st_mtime, sizeof(stat_result.st_mtime));
-
             ngx_log_debug2(NGX_LOG_DEBUG_HTTP, log, 0, "data: \"%s\"\tsize: %d", data, strlen(data));
-            ngx_log_debug2(NGX_LOG_DEBUG_HTTP, log, 0, "md5: '%s'\tsize: %d", md5_result, strlen(md5_result));
                     
             r->headers_out.etag = ngx_list_push(&r->headers_out.headers);
             if (r->headers_out.etag == NULL) {
@@ -160,31 +146,11 @@ static ngx_int_t ngx_http_static_etags_header_filter(ngx_http_request_t *r) {
             r->headers_out.etag->hash = 1;
             r->headers_out.etag->key.len = sizeof("Etag") - 1;
             r->headers_out.etag->key.data = (u_char *) "Etag";
-            r->headers_out.etag->value.len = strlen(md5_result);
-            r->headers_out.etag->value.data = (u_char *) md5_result;
+            r->headers_out.etag->value.len = strlen(data);
+            r->headers_out.etag->value.data = (u_char *) data;
         }
     }
 
     return ngx_http_next_header_filter(r);
 }
 
-void md5(const unsigned char *d, size_t n, char *md5, ngx_log_t *log){
-
-            u_char result[16];
-            u_char *tmp_result = result;
-            char *tmp = md5;
-
-            ngx_md5_t md5_ctx;
-            ngx_md5_init(&md5_ctx);
-            ngx_md5_update(&md5_ctx, d, n);
-            ngx_md5_final(result, &md5_ctx);
-
-            ngx_log_debug1(NGX_LOG_DEBUG_HTTP, log, 0, "result: \"%s\"", result);
-
-            while(*tmp_result != '\0'){
-              *tmp++ = TOHEX( (*tmp_result) >> 4 );
-              *tmp++ = TOHEX( (*tmp_result) & 0xf );
-              tmp_result++;
-            }
-            *tmp = '\0';
-}
